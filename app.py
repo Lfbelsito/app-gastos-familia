@@ -6,28 +6,45 @@ import plotly.express as px
 # --- 1. CONFIGURACIÓN ---
 st.set_page_config(page_title="Finanzas Familiares", layout="wide", page_icon="💰")
 
-# ==============================================================================
-# 🔴 ¡IMPORTANTE! PEGA AQUÍ EL LINK DE TU GOOGLE SHEET ENTRE LAS COMILLAS 🔴
-# ==============================================================================
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1-f2J1S78msG56qWHtBFqFKOQ3nKmF_qo0952_vBar1o/edit?usp=sharing" 
-# (He puesto el link que vi en tus capturas, pero verifícalo si cambió)
-
-# --- 2. LISTAS ---
+# --- 2. LISTAS (CALENDARIO COMPLETO) ---
+# Agregamos todos los meses del año para que no te falte ninguno
 MESES_ORDENADOS = [
+    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
     "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
 ]
+
 COLUMNAS_DINERO = ["Monto", "Total", "Gastos", "Ingresos", "Ahorro", "Valor", "Pesos", "USD"]
 
-# --- 3. FUNCIONES DE LIMPIEZA ---
+# --- 3. FUNCIONES DE LIMPIEZA (CORREGIDO BUG DE MILLONES) ---
 def limpiar_valor(val):
+    """
+    Limpia valores monetarios. 
+    CORRECCIÓN: Detecta si ya es número para no borrar decimales por error.
+    """
+    # Si Excel ya nos manda un número puro (int o float), NO lo tocamos.
+    # Esto evita que 4000000.0 se convierta en 40000000
+    if isinstance(val, (int, float)):
+        return float(val)
+    
+    # Si es texto, aplicamos la limpieza
     try:
-        val_str = str(val).strip().replace("$", "").replace("USD", "").replace("Ars", "").strip()
-        val_str = val_str.replace(".", "").replace(",", ".")
+        val_str = str(val).strip()
+        if val_str in ["", "-", "nan", "None"]: return 0.0
+        
+        # 1. Quitamos símbolos de moneda y espacios
+        val_str = val_str.replace("$", "").replace("USD", "").replace("Ars", "").strip()
+        
+        # 2. Manejo de Puntos y Comas (Formato Argentino/Europeo)
+        # Asumimos que el punto es de miles y la coma es decimal
+        val_str = val_str.replace(".", "") # Borrar punto de miles (1.000 -> 1000)
+        val_str = val_str.replace(",", ".") # Cambiar coma decimal por punto (1000,50 -> 1000.50)
+        
         return float(val_str)
     except:
         return 0.0
 
 def formato_visual(val):
+    """Para mostrar en pantalla bonito: $ 1.000"""
     return "$ {:,.0f}".format(val).replace(",", ".")
 
 # --- 4. FUNCIONES DE EXTRACCIÓN ---
@@ -49,29 +66,32 @@ def cortar_bloque(df_raw, fila, col, num_cols, filas_aprox=30):
         headers = [f"C{i}" if h in ["nan", ""] else h for i,h in enumerate(headers)]
         start = fila + 1
         df = df_raw.iloc[start : start + filas_aprox, col : col + num_cols].copy()
+        
+        # Filtro: Eliminar filas vacías
         df = df[~((df.iloc[:, 0].astype(str).isin(["nan", "", "None"])) & (df.iloc[:, 1].astype(str).isin(["nan", "", "None"])))]
+        
         df.columns = headers
         return df
     except: return pd.DataFrame()
 
-# --- 5. MOTOR DE DATOS (CON URL EXPLÍCITA) ---
+# --- 5. MOTOR DE DATOS ---
 @st.cache_data(ttl=60) 
 def cargar_todo_el_anio():
-    # Creamos la conexión
     conn = st.connection("gsheets", type=GSheetsConnection)
     
-    datos_anuales = []
     resumen_kpi = []
-
     barra = st.progress(0, text="Analizando tu año financiero...")
     
     for i, mes in enumerate(MESES_ORDENADOS):
         barra.progress((i + 1) / len(MESES_ORDENADOS), text=f"Leyendo {mes}...")
         try:
-            # AQUÍ ESTABA EL ERROR: Ahora le pasamos spreadsheet=SHEET_URL
-            df_raw = conn.read(spreadsheet=SHEET_URL, worksheet=mes, header=None)
+            # Intentamos leer la hoja. Si no existe (ej: Enero vacío), pasamos al siguiente
+            try:
+                df_raw = conn.read(worksheet=mes, header=None)
+            except:
+                continue # Si falla la lectura, salta al siguiente mes
             
-            # 1. Extraer KPI (Balance)
+            # Buscamos Balance
             r_bal, c_bal = encontrar_celda(df_raw, ["Gastos fijos"], min_col=5)
             if r_bal is not None:
                 bal = cortar_bloque(df_raw, r_bal, c_bal, 3, filas_aprox=1)
@@ -80,15 +100,17 @@ def cargar_todo_el_anio():
                     ingresos = limpiar_valor(bal.iloc[0, 1])
                     ahorro = limpiar_valor(bal.iloc[0, 2])
                     
-                    resumen_kpi.append({
-                        "Mes": mes,
-                        "Gastos": gastos,
-                        "Ingresos": ingresos,
-                        "Ahorro": ahorro
-                    })
+                    # Solo agregamos si hay datos reales (para no llenar el gráfico de ceros)
+                    if gastos > 0 or ingresos > 0:
+                        resumen_kpi.append({
+                            "Mes": mes,
+                            "Gastos": gastos,
+                            "Ingresos": ingresos,
+                            "Ahorro": ahorro
+                        })
             
         except Exception as e:
-            print(f"Error leyendo {mes}: {e}")
+            print(f"Error procesando {mes}: {e}")
             
     barra.empty()
     return pd.DataFrame(resumen_kpi)
@@ -131,53 +153,4 @@ if opcion == "📊 Dashboard General":
             st.plotly_chart(fig, use_container_width=True)
 
         with col_graf2:
-            st.subheader("Curva de Ahorro")
-            fig2 = px.line(df_resumen, x="Mes", y="Ahorro", markers=True)
-            fig2.update_traces(line_color="#636EFA")
-            st.plotly_chart(fig2, use_container_width=True)
-            
-        with st.expander("Ver tabla de datos consolidada"):
-            st.dataframe(df_resumen, use_container_width=True)
-            
-    else:
-        st.info("Aún no se pudieron cargar datos. Verifica el link de la hoja en el código.")
-
-
-# ==========================================
-# VER MENSUAL
-# ==========================================
-elif opcion == "📅 Ver Mensual":
-    mes_seleccionado = st.sidebar.selectbox("Selecciona Mes:", MESES_ORDENADOS)
-    st.title(f"Detalle de {mes_seleccionado}")
-    
-    try:
-        # AQUÍ TAMBIÉN AGREGAMOS LA URL EXPLÍCITA
-        df_raw = conn.read(spreadsheet=SHEET_URL, worksheet=mes_seleccionado, header=None)
-        
-        r_bal, c_bal = encontrar_celda(df_raw, ["Gastos fijos"], min_col=5)
-        balance = cortar_bloque(df_raw, r_bal, c_bal, 3, 1) if r_bal is not None else pd.DataFrame()
-        
-        r_gas, c_gas = encontrar_celda(df_raw, ["Vencimiento", "Categoría"], min_col=0)
-        gastos = cortar_bloque(df_raw, r_gas, c_gas, 5, 40) if r_gas is not None else pd.DataFrame()
-        
-        r_ing, c_ing = encontrar_celda(df_raw, ["Fecha", "Descripcion"], min_col=6, min_row=3)
-        ingresos = cortar_bloque(df_raw, r_ing, c_ing, 6, 20) if r_ing is not None else pd.DataFrame()
-
-        if not balance.empty:
-            c1, c2, c3 = st.columns(3)
-            try:
-                v1 = balance.iloc[0,0]; v2 = balance.iloc[0,1]; v3 = balance.iloc[0,2]
-                c1.metric("Gastos Fijos", str(v1)); c2.metric("Ingresos", str(v2)); c3.metric("Ahorro", str(v3))
-            except: pass
-            
-        st.divider()
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Gastos")
-            st.dataframe(gastos, hide_index=True)
-        with col2:
-            st.subheader("Ingresos")
-            st.dataframe(ingresos, hide_index=True)
-            
-    except Exception as e:
-        st.error(f"Error cargando el mes: {e}")
+            st.subheader("Curva de Ahorro
