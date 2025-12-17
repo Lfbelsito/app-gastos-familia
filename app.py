@@ -6,16 +6,14 @@ import google.generativeai as genai
 import json
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Finanzas Familiares Pro", layout="wide", page_icon="💳")
+st.set_page_config(page_title="Finanzas Familiares Pro", layout="wide", page_icon="📈")
 
 # --- 2. GESTIÓN DE CLAVES (SECRETS) ---
 try:
     if "GOOGLE_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    else:
-        pass
-except:
-    pass
+    else: pass
+except: pass
 
 # --- 3. LISTAS Y CONFIG ---
 MESES_ORDENADOS = [
@@ -62,20 +60,23 @@ def cortar_bloque(df_raw, fila, col, num_cols, filas_aprox=30):
         return df
     except: return pd.DataFrame()
 
-# --- 6. CEREBRO DE DATOS (LECTURA) ---
+# --- 6. CEREBRO DE DATOS (AHORA LEE DETALLES) ---
 @st.cache_data(ttl=60)
 def cargar_todo_el_anio():
     conn = st.connection("gsheets", type=GSheetsConnection)
     resumen_kpi = []
-    barra = st.progress(0, text="Analizando tu año financiero...")
+    todos_los_gastos = [] # Aquí guardaremos cada fila de gasto de cada mes
+    
+    barra = st.progress(0, text="Analizando tu economía al detalle...")
     
     for i, mes in enumerate(MESES_ORDENADOS):
-        barra.progress((i + 1) / len(MESES_ORDENADOS), text=f"Leyendo {mes}...")
+        barra.progress((i + 1) / len(MESES_ORDENADOS), text=f"Procesando {mes}...")
         try:
             try:
                 df_raw = conn.read(worksheet=mes, header=None)
             except: continue
             
+            # 1. KPI GENERALES
             r_bal, c_bal = encontrar_celda(df_raw, ["Gastos fijos"], min_col=5)
             if r_bal is not None:
                 bal = cortar_bloque(df_raw, r_bal, c_bal, 3, filas_aprox=1)
@@ -85,75 +86,129 @@ def cargar_todo_el_anio():
                     ahorro = limpiar_valor(bal.iloc[0, 2])
                     if gastos > 0 or ingresos > 0:
                         resumen_kpi.append({"Mes": mes, "Gastos": gastos, "Ingresos": ingresos, "Ahorro": ahorro})
+            
+            # 2. DETALLE DE GASTOS (NUEVO)
+            r_gas, c_gas = encontrar_celda(df_raw, ["Vencimiento", "Categoría"], min_col=0)
+            if r_gas is not None:
+                # Cortamos la tabla de gastos
+                df_gastos_mes = cortar_bloque(df_raw, r_gas, c_gas, 5, 40)
+                # Limpiamos el monto
+                if not df_gastos_mes.empty:
+                    # Buscamos cual columna es Monto y cual Categoria
+                    cols = df_gastos_mes.columns
+                    col_monto = [c for c in cols if "monto" in c.lower()][0]
+                    col_cat = [c for c in cols if "categ" in c.lower()][0]
+                    
+                    df_gastos_mes["Monto_Clean"] = df_gastos_mes[col_monto].apply(limpiar_valor)
+                    df_gastos_mes["Mes"] = mes # Le ponemos etiqueta del mes
+                    df_gastos_mes["Orden_Mes"] = i # Para ordenar cronologicamente
+                    
+                    # Guardamos solo lo importante: Mes, Categoria, Monto
+                    df_mini = df_gastos_mes[["Mes", "Orden_Mes", col_cat, "Monto_Clean"]].copy()
+                    df_mini.columns = ["Mes", "Orden_Mes", "Categoria", "Monto"]
+                    
+                    todos_los_gastos.append(df_mini)
+
         except: pass
             
     barra.empty()
-    return pd.DataFrame(resumen_kpi)
+    
+    # Consolidamos todo
+    df_kpi = pd.DataFrame(resumen_kpi)
+    df_detalles = pd.concat(todos_los_gastos) if todos_los_gastos else pd.DataFrame()
+    
+    return df_kpi, df_detalles
 
 # --- 7. FUNCIÓN IA PRO ---
 def analizar_imagen_con_ia(imagen_bytes, mime_type):
     try:
         model = genai.GenerativeModel('gemini-1.5-pro')
-        
-        prompt = """
-        Eres un experto contable. Analiza esta factura.
-        Extrae la siguiente información en JSON:
-        {
-            "fecha": "DD/MM/AAAA",
-            "categoria": "Texto", 
-            "monto": 0.00, 
-            "comentario": "Texto breve"
-        }
-        Si no encuentras el dato, usa null.
-        """
+        prompt = """Eres un experto contable. Extrae en JSON: {"fecha": "DD/MM/AAAA", "categoria": "Texto", "monto": 0.00, "comentario": "Texto"}. Si no hay dato, null."""
         image_part = {"mime_type": mime_type, "data": imagen_bytes}
         response = model.generate_content([prompt, image_part])
         return response.text
-    except Exception as e:
-        return f"Error IA: {str(e)}"
+    except Exception as e: return f"Error IA: {str(e)}"
 
 # --- 8. INTERFAZ PRINCIPAL ---
 
 st.sidebar.title("Navegación")
 if st.sidebar.button("🔄 Refrescar Datos"):
-    st.cache_data.clear()
-    st.rerun()
+    st.cache_data.clear(); st.rerun()
 
-opcion = st.sidebar.radio("Ir a:", ["📊 Dashboard General", "📅 Ver Mensual", "📤 Cargar Comprobante"])
-
+opcion = st.sidebar.radio("Ir a:", ["📊 Dashboard Inteligente", "📅 Ver Mensual", "📤 Cargar Comprobante"])
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # ==========================================
-# 1. DASHBOARD
+# 1. DASHBOARD INTELIGENTE
 # ==========================================
-if opcion == "📊 Dashboard General":
-    st.title("💳 Tablero de Control Pro")
-    st.markdown("### Panorama Anual")
-    df_resumen = cargar_todo_el_anio()
+if opcion == "📊 Dashboard Inteligente":
+    st.title("📈 Análisis Financiero 360°")
     
+    # Cargamos las DOS bases de datos (Totales y Detalles)
+    df_resumen, df_detalles = cargar_todo_el_anio()
+    
+    # --- SECCIÓN SUPERIOR: TOTALES ---
     if not df_resumen.empty:
-        total_ingresos = df_resumen["Ingresos"].sum()
-        total_gastos = df_resumen["Gastos"].sum()
-        total_ahorro = df_resumen["Ahorro"].sum()
-        
         c1, c2, c3 = st.columns(3)
-        c1.metric("Total Ingresos", formato_visual(total_ingresos), border=True)
-        c2.metric("Total Gastos", formato_visual(total_gastos), delta_color="inverse", border=True)
-        c3.metric("Ahorro Acumulado", formato_visual(total_ahorro), border=True)
-        st.divider()
-        c_graf1, c_graf2 = st.columns(2)
-        with c_graf1:
-            st.subheader("Flujo de Caja")
-            df_melted = df_resumen.melt(id_vars=["Mes"], value_vars=["Ingresos", "Gastos"], var_name="Tipo", value_name="Monto")
-            fig = px.bar(df_melted, x="Mes", y="Monto", color="Tipo", barmode="group", text_auto='.2s', color_discrete_map={"Ingresos": "#00CC96", "Gastos": "#EF553B"})
-            st.plotly_chart(fig, use_container_width=True)
-        with c_graf2:
-            st.subheader("Evolución del Ahorro")
-            fig2 = px.line(df_resumen, x="Mes", y="Ahorro", markers=True)
-            fig2.update_traces(line_color="#636EFA", line_width=4)
-            st.plotly_chart(fig2, use_container_width=True)
+        c1.metric("Ingresos Anuales", formato_visual(df_resumen["Ingresos"].sum()), border=True)
+        c2.metric("Gastos Anuales", formato_visual(df_resumen["Gastos"].sum()), delta_color="inverse", border=True)
+        c3.metric("Ahorro Anual", formato_visual(df_resumen["Ahorro"].sum()), border=True)
+    
+    st.divider()
+
+    # --- SECCIÓN NUEVA: LUPA DE GASTOS ---
+    st.subheader("🔍 Lupa de Gastos: Evolución Categoría por Categoría")
+    
+    if not df_detalles.empty:
+        # 1. Selector de Categoría
+        # Sacamos lista única de categorías y limpiamos vacíos
+        lista_categorias = sorted(df_detalles["Categoria"].unique().astype(str))
+        lista_categorias = [c for c in lista_categorias if c.lower() not in ["nan", "none", ""]]
+        
+        col_sel, col_stat = st.columns([1, 2])
+        
+        with col_sel:
+            categoria_elegida = st.selectbox("Selecciona un gasto para analizar:", lista_categorias)
+            
+            # Filtramos los datos
+            df_filtrado = df_detalles[df_detalles["Categoria"] == categoria_elegida].sort_values("Orden_Mes")
+            
+            if not df_filtrado.empty:
+                # Calculamos variación respecto al mes anterior
+                ultimo_monto = df_filtrado.iloc[-1]["Monto"]
+                
+                variacion_str = "Sin datos previos"
+                color_delta = "off"
+                
+                if len(df_filtrado) > 1:
+                    penultimo_monto = df_filtrado.iloc[-2]["Monto"]
+                    if penultimo_monto > 0:
+                        pct = ((ultimo_monto - penultimo_monto) / penultimo_monto) * 100
+                        variacion_str = f"{pct:+.1f}% vs mes anterior"
+                        color_delta = "inverse" if pct > 0 else "normal" # Rojo si sube, Verde si baja
+                
+                st.metric(f"Último valor ({df_filtrado.iloc[-1]['Mes']})", 
+                          formato_visual(ultimo_monto), 
+                          variacion_str, 
+                          delta_color=color_delta)
+
+        with col_stat:
+            # Gráfico de Línea Específico
+            if not df_filtrado.empty:
+                fig = px.line(df_filtrado, x="Mes", y="Monto", markers=True, title=f"Evolución de costo: {categoria_elegida}")
+                fig.update_traces(line_color="#EF553B", line_width=4, texttemplate='%{y:.2s}', textposition='top center')
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No hay datos históricos para esta categoría.")
+
+        # Tabla Resumen de esa categoría
+        with st.expander(f"Ver historial completo de {categoria_elegida}"):
+            df_tabla = df_filtrado[["Mes", "Monto"]].copy()
+            df_tabla["Monto"] = df_tabla["Monto"].apply(formato_visual)
+            st.dataframe(df_tabla, use_container_width=True)
+
     else:
-        st.info("Cargando datos del año...")
+        st.info("Aún no hay detalles de gastos cargados.")
 
 # ==========================================
 # 2. VER MENSUAL
@@ -177,109 +232,55 @@ elif opcion == "📅 Ver Mensual":
             c1, c2, c3 = st.columns(3)
             try:
                 v1 = limpiar_valor(balance.iloc[0,0]); v2 = limpiar_valor(balance.iloc[0,1]); v3 = limpiar_valor(balance.iloc[0,2])
-                c1.metric("Gastos Fijos", formato_visual(v1))
-                c2.metric("Ingresos", formato_visual(v2))
-                c3.metric("Ahorro", formato_visual(v3))
+                c1.metric("Gastos Fijos", formato_visual(v1)); c2.metric("Ingresos", formato_visual(v2)); c3.metric("Ahorro", formato_visual(v3))
             except: pass
         st.divider()
         c1, c2 = st.columns(2)
-        with c1: 
-            st.subheader("Gastos"); st.dataframe(gastos, hide_index=True)
-        with c2: 
-            st.subheader("Ingresos"); st.dataframe(ingresos, hide_index=True)
-    except:
-        st.warning(f"No se pudieron cargar datos para {mes_seleccionado}.")
+        with c1: st.subheader("Gastos"); st.dataframe(gastos, hide_index=True)
+        with c2: st.subheader("Ingresos"); st.dataframe(ingresos, hide_index=True)
+    except: st.warning("Mes sin datos.")
 
 # ==========================================
-# 3. CARGAR COMPROBANTE (MEJORADO CON DROPDOWN)
+# 3. CARGAR COMPROBANTE
 # ==========================================
 elif opcion == "📤 Cargar Comprobante":
-    st.title("📸 Escáner Inteligente de Facturas")
-    st.markdown("Sube una foto y decide si actualizamos un gasto fijo o creamos uno nuevo.")
-    
+    st.title("📸 Escáner IA")
     col_izq, col_der = st.columns([1, 1.5])
-    
     with col_izq:
-        mes_destino = st.selectbox("Mes a impactar:", MESES_ORDENADOS)
-        
-        # --- LÓGICA PARA BUSCAR CATEGORÍAS EXISTENTES ---
+        mes_destino = st.selectbox("Mes:", MESES_ORDENADOS)
+        # Dropdown inteligente (reutilizamos la lógica de lectura rápida)
         categorias_existentes = []
         try:
-            # Leemos rápido el mes para sacar las categorías
             df_mes = conn.read(worksheet=mes_destino, header=None)
             r_gas, c_gas = encontrar_celda(df_mes, ["Vencimiento", "Categoría"], min_col=0)
             if r_gas is not None:
-                # Cortamos la tabla de gastos
                 df_temp = cortar_bloque(df_mes, r_gas, c_gas, 5, 40)
-                # Buscamos la columna 'Categoría' (o similar)
                 cols_cat = [c for c in df_temp.columns if "categ" in c.lower()]
-                if cols_cat:
-                    cats = df_temp[cols_cat[0]].unique().tolist()
-                    # Limpiamos vacíos
-                    categorias_existentes = [c for c in cats if c and str(c).lower() not in ["nan", "none", ""]]
+                if cols_cat: categorias_existentes = [c for c in df_temp[cols_cat[0]].unique() if str(c) not in ["nan", ""]]
         except: pass
         
-        # Desplegable inteligente
-        opciones_dropdown = ["-- Nueva Fila (Gasto Nuevo) --"] + categorias_existentes
-        categoria_seleccionada = st.selectbox("¿A qué ítem corresponde?", opciones_dropdown)
-        
-        uploaded_file = st.file_uploader("Sube el archivo aquí", type=["png", "jpg", "jpeg", "pdf"])
-    
-    if uploaded_file is not None:
-        with col_izq:
-            if uploaded_file.type != "application/pdf":
-                st.image(uploaded_file, caption="Vista previa", use_container_width=True)
-        
-        with col_der:
-            st.write("---")
-            if st.button("✨ Extraer Datos con IA", type="primary"):
-                with st.spinner("Gemini Pro analizando..."):
-                    if "GOOGLE_API_KEY" not in st.secrets:
-                        st.error("⚠️ Falta API Key."); st.stop()
-                    
-                    bytes_data = uploaded_file.getvalue()
-                    resultado_texto = analizar_imagen_con_ia(bytes_data, uploaded_file.type)
-                    
-                    try:
-                        clean_json = resultado_texto.replace("```json", "").replace("```", "").strip()
-                        datos_factura = json.loads(clean_json)
-                        st.session_state['datos_ia'] = datos_factura
-                    except:
-                        st.error("Error leyendo respuesta IA.")
+        cat_sel = st.selectbox("Categoría existente:", ["-- Nuevo Gasto --"] + categorias_existentes)
+        archivo = st.file_uploader("Archivo", type=["png", "jpg", "pdf"])
 
-    # Formulario de Revisión
+    if archivo and st.button("✨ Analizar"):
+        with st.spinner("Leyendo..."):
+            if "GOOGLE_API_KEY" not in st.secrets: st.error("Falta API Key"); st.stop()
+            res = analizar_imagen_con_ia(archivo.getvalue(), archivo.type)
+            try:
+                datos = json.loads(res.replace("```json", "").replace("```", "").strip())
+                st.session_state['datos_ia'] = datos
+            except: st.error("Error IA")
+
     if 'datos_ia' in st.session_state:
-        datos = st.session_state['datos_ia']
-        
-        st.success("Datos extraídos. Verifica antes de guardar.")
-        
-        with st.form("form_guardar_gasto"):
+        d = st.session_state['datos_ia']
+        with st.form("save"):
             c1, c2 = st.columns(2)
-            fecha = c1.text_input("Fecha", datos.get("fecha", ""))
-            
-            # Si el usuario eligió una categoría existente en el dropdown, la usamos por defecto
-            cat_default = datos.get("categoria", "")
-            if categoria_seleccionada != "-- Nueva Fila (Gasto Nuevo) --":
-                cat_default = categoria_seleccionada
-                
-            categoria = c2.text_input("Categoría", cat_default)
-            monto = c1.number_input("Monto ($)", value=float(datos.get("monto", 0.0)), step=100.0)
-            comentario = c2.text_input("Comentario", datos.get("comentario", ""))
-            pagado = st.checkbox("¿Pagado?", value=True)
-            
-            submitted = st.form_submit_button("💾 Generar Datos para Guardar")
-            
-            if submitted:
-                st.write("---")
-                # LÓGICA: Distinguimos si es actualización o nuevo
-                if categoria_seleccionada != "-- Nueva Fila (Gasto Nuevo) --":
-                    st.info(f"💡 **ACTUALIZACIÓN DE GASTO FIJO ({categoria_seleccionada})**")
-                    st.write("Copia estos valores y pégalos sobre la fila existente de tu Excel para no romper el orden:")
-                    st.code(f"{fecha}\t{monto}\t{'Si' if pagado else 'No'}\t{comentario}")
-                    st.caption("Nota: Copia y pega en las columnas Fecha, Monto, Pagado y Comentario de esa fila.")
-                else:
-                    st.info("🆕 **NUEVO GASTO**")
-                    st.write("Pega esta fila nueva al final de tu tabla de gastos:")
-                    st.code(f"{fecha}\t{categoria}\t{monto}\t{'Si' if pagado else 'No'}\t{comentario}")
-                
+            f = c1.text_input("Fecha", d.get("fecha"))
+            cat_def = cat_sel if cat_sel != "-- Nuevo Gasto --" else d.get("categoria")
+            cat = c2.text_input("Categoría", cat_def)
+            m = c1.number_input("Monto", value=float(d.get("monto", 0)), step=100.0)
+            comm = c2.text_input("Nota", d.get("comentario"))
+            pag = st.checkbox("Pagado", True)
+            if st.form_submit_button("💾 Generar"):
+                st.info("Copia esto en tu Excel:"); st.code(f"{f}\t{m}\t{'Si' if pag else 'No'}\t{comm}")
                 del st.session_state['datos_ia']
