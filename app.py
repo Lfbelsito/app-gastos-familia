@@ -9,7 +9,7 @@ st.set_page_config(page_title="Finanzas Familiares", layout="wide", page_icon="�
 # ==============================================================================
 # 🔴 ¡IMPORTANTE! PEGA AQUÍ EL LINK DE TU GOOGLE SHEET ENTRE LAS COMILLAS 🔴
 # ==============================================================================
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1-f2J1S78msG56qWHtBFqFKOQ3nKmF_qo0952_vBar1o/edit?gid=880489958#gid=880489958" 
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1-f2J1S78msG56qWHtBFqFKOQ3nKmF_qo0952_vBar1o/edit?usp=sharing" 
 # (He puesto el link que vi en tus capturas, pero verifícalo si cambió)
 
 # --- 2. LISTAS ---
