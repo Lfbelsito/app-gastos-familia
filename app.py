@@ -16,7 +16,8 @@ COLUMNAS_DINERO = [
     "Cotizacion", "Saldo", "Valor", "Pesos", "USD", "Ars"
 ] + MESES
 
-# --- 3. FUNCIONES DE LIMPIEZA ---
+# --- 3. FUNCIONES ---
+
 def formato_pesos(valor):
     try:
         val_str = str(valor).strip()
@@ -33,28 +34,44 @@ def limpiar_y_formatear(df):
     df = df.astype(str).replace(["nan", "None", "<NA>"], "-")
     for col in df.columns:
         if any(k.lower() in col.lower() for k in COLUMNAS_DINERO):
-            # No formateamos si es descripcion
             if "descrip" not in col.lower() and "moneda" not in col.lower() and "fuente" not in col.lower():
                 df[col] = df[col].apply(formato_pesos)
     return df
 
-# --- 4. BUSCADOR ---
-def encontrar_coordenadas(df_raw, palabras_clave, min_col=0, min_row=0):
-    """Escanea la hoja buscando alguna de las palabras clave"""
+def encontrar_filas_con_meses(df_raw):
+    """
+    Busca todas las filas que contengan la palabra 'Enero' y 'Febrero'.
+    Devuelve una lista con los índices de esas filas.
+    Ejemplo: [2, 24, 37] (Fila Evolución, Fila Saldos, Fila Dólares)
+    """
+    filas_encontradas = []
     try:
-        zona = df_raw.iloc[min_row:, min_col:]
-        for r_idx, row in zona.iterrows():
-            for c_idx, val in enumerate(row):
-                val_str = str(val).lower()
-                for palabra in palabras_clave:
-                    # 'match' simple: si la palabra está dentro de la celda
-                    if palabra.lower() in val_str:
-                        return r_idx, (c_idx + min_col)
+        # Convertimos a string y buscamos
+        # Iteramos solo la columna 1 a 10 para ser eficientes
+        for r_idx, row in df_raw.iterrows():
+            fila_texto = " ".join(row.astype(str).values).lower()
+            if "enero" in fila_texto and "febrero" in fila_texto:
+                filas_encontradas.append(r_idx)
+    except:
+        pass
+    return filas_encontradas
+
+def encontrar_coordenadas(df_raw, palabras_clave):
+    """Buscador simple por contenido"""
+    try:
+        for r_idx, row in df_raw.iterrows():
+            fila_texto = " ".join(row.astype(str).values).lower()
+            for p in palabras_clave:
+                if p.lower() in fila_texto:
+                    # Encontramos la fila, ahora buscamos la columna exacta
+                    for c_idx, val in enumerate(row):
+                        if p.lower() in str(val).lower():
+                            return r_idx, c_idx
         return None, None
     except:
         return None, None
 
-def cortar_desde_coordenada(df_raw, fila, col, num_cols, filas_datos=None):
+def cortar_tabla(df_raw, fila, col, num_cols, filas_datos=None):
     try:
         # Headers
         headers = df_raw.iloc[fila, col : col + num_cols].astype(str).str.strip().tolist()
@@ -66,7 +83,7 @@ def cortar_desde_coordenada(df_raw, fila, col, num_cols, filas_datos=None):
             df = df_raw.iloc[inicio_datos : inicio_datos + filas_datos, col : col + num_cols].copy()
         else:
             df = df_raw.iloc[inicio_datos:, col : col + num_cols].copy()
-            # Cortamos solo si la PRIMERA columna está vacía (fin de tabla)
+            # Cortamos solo si la primera columna está vacía
             df = df[df.iloc[:, 0].ne("nan") & df.iloc[:, 0].ne("")]
             
         df.columns = headers
@@ -74,100 +91,116 @@ def cortar_desde_coordenada(df_raw, fila, col, num_cols, filas_datos=None):
     except:
         return pd.DataFrame()
 
-# --- 5. APP PRINCIPAL ---
+# --- 4. APP PRINCIPAL ---
+
 lista_pestanas = ["Resumen Anual"] + MESES[6:] + MESES[:6]
 hoja_seleccionada = st.sidebar.selectbox("📅 Selecciona Período:", lista_pestanas)
 
 conn = st.connection("gsheets", type=GSheetsConnection)
+df_raw = conn.read(worksheet=hoja_seleccionada, header=None, ttl=5)
 
-try:
-    df_raw = conn.read(worksheet=hoja_seleccionada, header=None, ttl=5)
-except:
-    st.error("Error conectando con Google Sheets.")
-    st.stop()
-
-# === RESUMEN ANUAL ===
+# === VISTA RESUMEN ANUAL ===
 if hoja_seleccionada == "Resumen Anual":
     st.header("📊 Resumen Anual")
+
+    # ESTRATEGIA: BUSCAR LAS FILAS QUE TIENEN "ENERO"
+    filas_meses = encontrar_filas_con_meses(df_raw)
     
-    # 1. GASTOS
-    r, c = encontrar_coordenadas(df_raw, ["Categoría", "Categoria"])
-    if r is not None:
+    # 1. EVOLUCIÓN GASTOS (Debe ser la primera aparición de "Enero")
+    if len(filas_meses) > 0:
+        f_evolucion = filas_meses[0]
         st.subheader("📉 Evolución de Gastos")
-        df = cortar_desde_coordenada(df_raw, r, c, num_cols=14)
-        st.dataframe(limpiar_y_formatear(df), hide_index=True)
-    
+        # Asumimos que empieza en col 0 (A)
+        df_ev = cortar_tabla(df_raw, f_evolucion, 0, 14) 
+        st.dataframe(limpiar_y_formatear(df_ev), hide_index=True)
+    else:
+        st.warning("No encontré la tabla de Evolución (no veo 'Enero' en ninguna fila).")
+
     st.divider()
-    
-    # 2. SALDOS
-    # Buscamos título verde "Saldos Mensuales", header está +1 abajo
-    r, c = encontrar_coordenadas(df_raw, ["Saldos Mensuales"])
-    if r is not None:
+
+    # 2. SALDOS MENSUALES (Debe ser la segunda aparición de "Enero")
+    if len(filas_meses) > 1:
+        f_saldos = filas_meses[1]
         st.subheader("💰 Saldos Mensuales")
-        df = cortar_desde_coordenada(df_raw, r + 1, c, num_cols=14, filas_datos=1)
-        st.dataframe(limpiar_y_formatear(df), hide_index=True)
-        
+        # Saldos es solo 1 fila de datos
+        df_sal = cortar_tabla(df_raw, f_saldos, 0, 14, filas_datos=1)
+        st.dataframe(limpiar_y_formatear(df_sal), hide_index=True)
+
     st.divider()
-    
-    # 3. TABLAS INFERIORES
+
     c1, c2 = st.columns([1, 2])
-    
+
+    # 3. MIS AHORROS (No tiene meses, buscamos "Paypal" o "Fuente")
     with c1:
         st.subheader("🏦 Mis Ahorros")
-        # ESTRATEGIA: Buscar directamente la palabra "Fuente" que es el encabezado de la columna A
-        r, c = encontrar_coordenadas(df_raw, ["Fuente"])
+        # Buscamos "Paypal" (dato seguro)
+        r_ah, c_ah = encontrar_coordenadas(df_raw, ["Paypal"])
         
-        if r is not None:
-            # Encontró el header "Fuente", cortamos desde ahí
-            df = cortar_desde_coordenada(df_raw, r, c, num_cols=5)
-            st.dataframe(limpiar_y_formatear(df), hide_index=True)
+        if r_ah is not None:
+            # Si encontramos Paypal, el header "Fuente" está 1 fila arriba
+            df_ah = cortar_tabla(df_raw, r_ah - 1, c_ah, 5)
+            st.dataframe(limpiar_y_formatear(df_ah), hide_index=True)
         else:
-            st.info("No encontré la columna 'Fuente'.")
-    
+            # Plan B: buscar "Fuente"
+            r_fuente, c_fuente = encontrar_coordenadas(df_raw, ["Fuente"])
+            if r_fuente is not None:
+                df_ah = cortar_tabla(df_raw, r_fuente, c_fuente, 5)
+                st.dataframe(limpiar_y_formatear(df_ah), hide_index=True)
+            else:
+                st.info("No encontré la tabla de Ahorros.")
+
+    # 4. CAMBIO DE DÓLARES (Debe ser la tercera aparición de "Enero")
     with c2:
         st.subheader("🔄 Cambio de Dólares")
-        # ESTRATEGIA: Buscar "Dolares" (el dato de la fila 39) y subir 1 fila para agarrar los meses
-        # O buscar "Cotizacion" y subir 2 filas.
-        # "Dolares" es seguro porque está en la columna A.
-        r, c = encontrar_coordenadas(df_raw, ["Dolares"]) 
-        
-        if r is not None:
-            # Si encontró "Dolares" (etiqueta), los headers (Meses) están 1 fila ARRIBA
-            df = cortar_desde_coordenada(df_raw, r - 1, c, num_cols=14)
-            st.dataframe(limpiar_y_formatear(df), hide_index=True)
+        if len(filas_meses) > 2:
+            f_dolares = filas_meses[2]
+            # Esta tabla empieza donde dice "Enero"
+            df_dol = cortar_tabla(df_raw, f_dolares, 0, 14)
+            st.dataframe(limpiar_y_formatear(df_dol), hide_index=True)
         else:
-            # Fallback: buscar el título verde plural o singular
-            r, c = encontrar_coordenadas(df_raw, ["Cambio de dolares", "Cambio de dolare"])
-            if r is not None:
-                # Si encontró titulo verde, header está +1 abajo
-                df = cortar_desde_coordenada(df_raw, r + 1, c, num_cols=14)
-                st.dataframe(limpiar_y_formatear(df), hide_index=True)
+            # Si no hubo 3ra aparición, probamos buscando "Cotizacion"
+            r_cot, c_cot = encontrar_coordenadas(df_raw, ["Cotizacion", "Dolares"])
+            if r_cot is not None:
+                 # Si encontramos el dato, subimos filas para pillar el header
+                 # (Aproximación: 2 filas arriba suele estar el header)
+                 df_dol = cortar_tabla(df_raw, r_cot - 2, 0, 14)
+                 st.dataframe(limpiar_y_formatear(df_dol), hide_index=True)
             else:
-                st.info("No encontré la tabla de Cambio.")
+                 st.info("No encontré la tabla de Cambio.")
 
-# === MESES INDIVIDUALES ===
+# === VISTA MESES ===
 else:
     st.write(f"📂 Viendo mes de: **{hoja_seleccionada}**")
     
     # KPIs
-    r_bal, c_bal = encontrar_coordenadas(df_raw, ["Gastos fijos"], min_col=4)
+    r_bal, c_bal = encontrar_coordenadas(df_raw, ["Gastos fijos"])
     balance = pd.DataFrame()
     if r_bal is not None:
-        balance = cortar_desde_coordenada(df_raw, r_bal, c_bal, num_cols=3, filas_datos=1)
+        # A veces lo encuentra en col I (8), a veces J... cortamos 3 cols
+        balance = cortar_tabla(df_raw, r_bal, c_bal, 3, filas_datos=1)
 
     # Gastos
-    r_gastos, c_gastos = encontrar_coordenadas(df_raw, ["Vencimiento", "Categoría"])
+    r_gas, c_gas = encontrar_coordenadas(df_raw, ["Vencimiento", "Categoría"])
     gastos = pd.DataFrame()
-    if r_gastos is not None:
-        gastos = cortar_desde_coordenada(df_raw, r_gastos, c_gastos, num_cols=5)
+    if r_gas is not None:
+        gastos = cortar_tabla(df_raw, r_gas, c_gas, 5)
 
-    # Ingresos
-    r_ing, c_ing = encontrar_coordenadas(df_raw, ["Fecha", "Descripcion"], min_col=5, min_row=4)
+    # Ingresos (Buscamos "Fecha" pero a la derecha para no confundir con gastos)
+    # Hacemos un recorte virtual para buscar
+    r_ing = None
+    try:
+        sub_df = df_raw.iloc[4:, 5:] # Desde fila 4, columna F en adelante
+        r_sub, c_sub = encontrar_coordenadas(sub_df, ["Fecha", "Descripcion"])
+        if r_sub is not None:
+            r_ing = r_sub + 4 # Ajustamos indice
+            c_ing = c_sub + 5
+    except: pass
+    
     ingresos = pd.DataFrame()
     if r_ing is not None:
-        ingresos = cortar_desde_coordenada(df_raw, r_ing, c_ing, num_cols=6)
+        ingresos = cortar_tabla(df_raw, r_ing, c_ing, 6)
 
-    # VISUALIZACIÓN
+    # Visualización Mes
     st.markdown("### 💰 Balance del Mes")
     if not balance.empty:
         c1, c2, c3 = st.columns(3)
@@ -178,16 +211,14 @@ else:
             c1.metric(balance.columns[0], v1)
             c2.metric(balance.columns[1], v2)
             c3.metric(balance.columns[2], v3)
-        except: st.warning("Datos encontrados pero formato incorrecto.")
-    else: st.warning("No se encontró tabla de Balance.")
+        except: st.warning("Formato balance inesperado")
+    else: st.warning("No encontrado")
 
     st.divider()
-    col1, col2 = st.columns(2)
-    with col1:
+    c1, c2 = st.columns(2)
+    with c1: 
         st.subheader("📉 Gastos")
         if not gastos.empty: st.dataframe(limpiar_y_formatear(gastos), hide_index=True)
-        else: st.info("Sin gastos.")
-    with col2:
+    with c2: 
         st.subheader("📈 Ingresos")
         if not ingresos.empty: st.dataframe(limpiar_y_formatear(ingresos), hide_index=True)
-        else: st.info("Sin ingresos.")
