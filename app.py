@@ -153,4 +153,62 @@ if opcion == "📊 Dashboard General":
             st.plotly_chart(fig, use_container_width=True)
 
         with col_graf2:
-            st.subheader("Curva de Ahorro
+            st.subheader("Curva de Ahorro")
+            fig2 = px.line(df_resumen, x="Mes", y="Ahorro", markers=True)
+            fig2.update_traces(line_color="#636EFA", line_width=4)
+            st.plotly_chart(fig2, use_container_width=True)
+            
+        with st.expander("Ver tabla de datos consolidada"):
+            df_show = df_resumen.copy()
+            for col in ["Gastos", "Ingresos", "Ahorro"]:
+                df_show[col] = df_show[col].apply(formato_visual)
+            st.dataframe(df_show, use_container_width=True)
+            
+    else:
+        st.info("No se encontraron datos. Asegúrate de que las pestañas de los meses (Enero, Febrero...) existan en el Google Sheet.")
+
+
+# ==========================================
+# VER MENSUAL
+# ==========================================
+elif opcion == "📅 Ver Mensual":
+    mes_seleccionado = st.sidebar.selectbox("Selecciona Mes:", MESES_ORDENADOS)
+    st.title(f"Detalle de {mes_seleccionado}")
+    
+    try:
+        df_raw = conn.read(worksheet=mes_seleccionado, header=None)
+        
+        # Búsquedas
+        r_bal, c_bal = encontrar_celda(df_raw, ["Gastos fijos"], min_col=5)
+        balance = cortar_bloque(df_raw, r_bal, c_bal, 3, 1) if r_bal is not None else pd.DataFrame()
+        
+        r_gas, c_gas = encontrar_celda(df_raw, ["Vencimiento", "Categoría"], min_col=0)
+        gastos = cortar_bloque(df_raw, r_gas, c_gas, 5, 40) if r_gas is not None else pd.DataFrame()
+        
+        r_ing, c_ing = encontrar_celda(df_raw, ["Fecha", "Descripcion"], min_col=6, min_row=3)
+        ingresos = cortar_bloque(df_raw, r_ing, c_ing, 6, 20) if r_ing is not None else pd.DataFrame()
+
+        # KPIs
+        if not balance.empty:
+            c1, c2, c3 = st.columns(3)
+            try:
+                # Usamos limpiar_valor para asegurar que el número es correcto
+                v1 = limpiar_valor(balance.iloc[0,0])
+                v2 = limpiar_valor(balance.iloc[0,1])
+                v3 = limpiar_valor(balance.iloc[0,2])
+                c1.metric("Gastos Fijos", formato_visual(v1))
+                c2.metric("Ingresos", formato_visual(v2))
+                c3.metric("Ahorro", formato_visual(v3))
+            except: pass
+            
+        st.divider()
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Gastos")
+            st.dataframe(gastos, hide_index=True)
+        with col2:
+            st.subheader("Ingresos")
+            st.dataframe(ingresos, hide_index=True)
+            
+    except Exception as e:
+        st.warning(f"No se pudieron cargar datos para {mes_seleccionado}. Quizás la pestaña no existe o está vacía.")
