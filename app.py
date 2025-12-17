@@ -1,26 +1,32 @@
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 
-# Configuración de la página (título en la pestaña del navegador, icono, etc.)
-st.set_page_config(
-    page_title="Finanzas Familiares",
-    page_icon="💰",
-    layout="wide"
-)
+# 1. Configuración de página
+st.set_page_config(page_title="Finanzas Familiares", layout="wide")
+st.title("💸 Tablero de Control Familiar")
 
-# Título principal de la app
-st.title("💸 Gestión de Gastos Familiares")
+# 2. Conexión a Google Sheets
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Mensaje de bienvenida
-st.markdown("""
-Esta aplicación nos ayudará a:
-* 📊 Visualizar nuestros gastos e ingresos.
-* 🗓️ Controlar vencimientos.
-* 🤖 Cargar facturas automáticamente con IA.
-""")
+# 3. Función para cargar datos (con caché para que sea rápido)
+# TTL es el tiempo de vida de la memoria, aquí 5 segundos para ver cambios rápido
+def cargar_datos():
+    # Lee la primera hoja por defecto (worksheet=0) o pon el nombre de la pestaña principal
+    df = conn.read(usecols=list(range(10)), ttl=5) 
+    return df
 
-st.success("¡El sistema está online! El siguiente paso es conectar la Google Sheet.")
+# 4. Intentar cargar y mostrar
+try:
+    st.write("Conectando con la base de datos...")
+    df = cargar_datos()
+    
+    st.success("¡Conexión Exitosa!")
+    
+    # Mostrar métricas simples si existen columnas numéricas
+    st.subheader("Vista Previa de los Datos")
+    st.dataframe(df)
 
-# Un botón de prueba
-if st.button("Hacer una prueba"):
-    st.balloons()
+except Exception as e:
+    st.error(f"Hubo un error al conectar: {e}")
+    st.info("Revisa que hayas compartido la hoja con el email del robot service account.")
