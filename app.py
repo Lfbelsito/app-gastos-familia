@@ -2,43 +2,50 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 
+# 1. Configuración de página
 st.set_page_config(page_title="Finanzas Familiares", layout="wide")
-
-# Título y Sidebar
 st.title("💸 Tablero de Control Familiar")
-st.sidebar.header("Configuración")
 
-# 1. Selector de Pestaña (IMPORTANTE: Pon aquí los nombres EXACTOS de tus pestañas)
-# Ejemplo: "Resumen", "Enero", "Febrero", etc.
+st.sidebar.header("Navegación")
+
+# 2. LISTA EXACTA DE PESTAÑAS
+# Aquí ponemos los nombres tal cual están en tu Google Sheet
+lista_pestanas = [
+    "Resumen Anual",
+    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+]
+
 hoja_seleccionada = st.sidebar.selectbox(
-    "Selecciona el Mes/Pestaña:",
-    ["Hoja 1", "Enero", "Febrero", "Marzo", "Abril", "Resumen"] # <--- CAMBIA ESTO POR TUS NOMBRES REALES
+    "Selecciona qué quieres ver:",
+    lista_pestanas
 )
 
-# 2. Conexión
+# 3. Conexión a Google Sheets
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# 3. Cargar datos de la pestaña elegida
+# 4. Cargar y mostrar datos
 try:
-    st.write(f"Cargando datos de: **{hoja_seleccionada}**...")
+    st.write(f"📂 Cargando datos de: **{hoja_seleccionada}**...")
     
-    # TRUCO: 'skiprows=1' salta la primera fila si tienes títulos raros.
-    # Si ves que sigue mal, prueba cambiar a 0, 2 o 3.
+    # Leemos la pestaña seleccionada
+    # Si tus encabezados (Fecha, Monto, etc.) no están en la primera fila (fila 1),
+    # cambia skiprows=0 por skiprows=1 o 2.
     df = conn.read(
         worksheet=hoja_seleccionada,
-        skiprows=0,  # <--- JUEGA CON ESTE NUMERO SI LOS ENCABEZADOS SALEN MAL
+        skiprows=0, 
         ttl=5
     )
     
-    # Limpieza básica: Eliminar filas donde todo esté vacío
+    # Limpieza: quitamos filas que estén totalmente vacías
     df = df.dropna(how="all")
     
-    st.success("¡Datos cargados!")
+    st.success(f"✅ Mostrando {len(df)} registros")
     
-    # Mostramos los datos
-    st.dataframe(df)
+    # Mostramos la tabla interactiva
+    st.dataframe(df, use_container_width=True)
 
 except Exception as e:
-    st.warning(f"No se pudo leer la pestaña '{hoja_seleccionada}'.")
-    st.error(f"Error técnico: {e}")
-    st.info("💡 Pista: Verifica que el nombre en el selector coincida EXACTAMENTE con el de tu Google Sheet (mayúsculas, espacios, etc).")
+    st.error(f"⚠️ No se pudo encontrar la pestaña '{hoja_seleccionada}'.")
+    st.info("Por favor verifica que el nombre en la lista del código sea idéntico al de tu Google Sheet (mayúsculas, acentos, espacios).")
+    st.caption(f"Detalle del error: {e}")
