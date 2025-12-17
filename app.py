@@ -6,23 +6,33 @@ import pandas as pd
 st.set_page_config(page_title="Finanzas Familiares", layout="wide")
 st.title("💸 Tablero de Control Familiar")
 
-# --- FUNCION DE LIMPIEZA BLINDADA ---
-def limpiar_df(df):
-    # 1. Eliminamos filas que sean todo NaN (vacías)
-    df = df.dropna(how='all')
-    
-    # 2. Iteramos por POSICIÓN (0, 1, 2...) en vez de por nombre
-    # Esto evita el error si hay columnas con nombres repetidos
-    for i in range(len(df.columns)):
-        try:
-            # Intentamos convertir la columna i a números
-            df.iloc[:, i] = pd.to_numeric(df.iloc[:, i], errors='ignore')
-        except:
-            pass # Si falla, dejamos el dato como estaba
-            
-    # 3. Reseteamos el índice
-    df = df.reset_index(drop=True)
-    return df
+# --- FUNCIÓN DE EXTRACCIÓN QUIRÚRGICA ---
+def cortar_excel(df_raw, fila_titulo, fila_datos_inicio, col_inicio, col_fin):
+    try:
+        # 1. Seleccionamos el rectángulo de datos
+        # slice(col_inicio, col_fin) selecciona las columnas verticalmente
+        sub_df = df_raw.iloc[:, col_inicio:col_fin]
+        
+        # 2. Atrapamos los títulos (headers)
+        titulos = sub_df.iloc[fila_titulo].astype(str).str.strip()
+        
+        # 3. Atrapamos los datos
+        datos = sub_df.iloc[fila_datos_inicio:].copy()
+        
+        # 4. Asignamos los títulos a los datos
+        datos.columns = titulos
+        
+        # 5. Limpieza final: borrar filas totalmente vacías
+        datos = datos.dropna(how='all')
+        
+        # Filtro extra: Si la columna clave (la primera) está vacía, borramos la fila
+        # Esto evita que lea filas infinitas hacia abajo vacías
+        if not datos.empty:
+            datos = datos[datos.iloc[:, 0].ne("nan") & datos.iloc[:, 0].notna()]
+
+        return datos
+    except Exception as e:
+        return pd.DataFrame()
 
 # --- NAVEGACIÓN ---
 lista_pestanas = [
@@ -34,80 +44,71 @@ hoja_seleccionada = st.sidebar.selectbox("Selecciona el Mes:", lista_pestanas)
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
-    # CASO 1: RESUMEN ANUAL
     if hoja_seleccionada == "Resumen Anual":
         st.info("📊 Estás viendo el Resumen Anual.")
         df = conn.read(worksheet=hoja_seleccionada, ttl=5)
-        df = limpiar_df(df)
         st.dataframe(df, use_container_width=True)
-    
-    # CASO 2: MESES DETALLADOS
+
     else:
         st.write(f"📂 Cargando mes de: **{hoja_seleccionada}**...")
         
-        # Leemos todo "en crudo"
+        # LEEMOS TODO EL MAPA (Indices empiezan en 0)
         df_raw = conn.read(worksheet=hoja_seleccionada, header=None, ttl=5)
-        
-        # === TABLA 1: GASTOS (Izquierda) ===
-        # Cortamos columnas A a E (0 a 5)
-        gastos_raw = df_raw.iloc[1:, 0:5].copy()
-        
-        # Asignamos nombres de columnas con cuidado
-        cols_gastos = gastos_raw.iloc[0].astype(str).str.strip().tolist()
-        # Truco: Si hay nombres repetidos o vacíos, Pandas los sufija automáticamente al asignar
-        gastos_raw.columns = cols_gastos
-        
-        gastos_raw = gastos_raw[1:] # Quitamos fila de títulos
-        gastos_raw = limpiar_df(gastos_raw) # Limpieza segura
-        
-        # === TABLA 2: RESUMEN (Arriba Derecha) ===
-        resumen_raw = df_raw.iloc[1:3, 8:11].copy()
-        cols_resumen = resumen_raw.iloc[0].astype(str).str.strip().tolist()
-        resumen_raw.columns = cols_resumen
-        resumen_raw = resumen_raw[1:]
-        resumen_raw = limpiar_df(resumen_raw)
 
-        # === TABLA 3: INGRESOS (Abajo Derecha) ===
-        # Buscamos dónde empieza "Fecha"
-        start_row = 5
-        col_busqueda = df_raw.iloc[:, 8].astype(str) # Columna I
-        for idx, val in col_busqueda.items():
-            if val.strip() == "Fecha":
-                start_row = idx
-                break
-                
-        ingresos_raw = df_raw.iloc[start_row:, 8:14].copy()
-        cols_ingresos = ingresos_raw.iloc[0].astype(str).str.strip().tolist()
-        ingresos_raw.columns = cols_ingresos
-        ingresos_raw = ingresos_raw[1:]
-        ingresos_raw = limpiar_df(ingresos_raw)
+        # -----------------------------------------------------------
+        # COORDENADAS EXACTAS (AJUSTADAS A TU CORRECCIÓN)
+        # Excel Fila 1 = Python 0
+        # Excel Fila 2 = Python 1
+        # Excel Fila 6 = Python 5
+        # Col A=0, E=5, I=8, K=11, N=14
+        # -----------------------------------------------------------
 
-        # --- VISUALIZACIÓN ---
+        # === 1. GASTOS ===
+        # Títulos en Fila 1 (idx 0), Datos desde Fila 2 (idx 1). Cols A-E (0-5)
+        gastos = cortar_excel(df_raw, fila_titulo=0, fila_datos_inicio=1, col_inicio=0, col_fin=5)
+
+        # === 2. RESUMEN (BALANCE) ===
+        # Títulos en Fila 2 (idx 1), Datos en Fila 3 (idx 2). Cols I-K (8-11)
+        # Aquí limitamos los datos solo a la fila 2 (row 3 excel) para que no lea basura de abajo
+        balance = df_raw.iloc[2:3, 8:11].copy()
+        balance.columns = df_raw.iloc[1, 8:11].astype(str).str.strip() # Títulos de row 2 excel
+
+        # === 3. INGRESOS ===
+        # Títulos en Fila 6 (idx 5), Datos desde Fila 7 (idx 6). Cols I-N (8-14)
+        ingresos = cortar_excel(df_raw, fila_titulo=5, fila_datos_inicio=6, col_inicio=8, col_fin=14)
+
+
+        # --- MOSTRAR EN PANTALLA ---
+        
         st.markdown("### 💰 Balance del Mes")
-        if not resumen_raw.empty:
-            col1, col2, col3 = st.columns(3)
-            # Usamos iloc[0, 0] (fila 0, columna 0) en vez de nombres para ser mas robustos
+        if not balance.empty:
+            c1, c2, c3 = st.columns(3)
             try:
-                gf = resumen_raw.columns[0] + ": " + str(resumen_raw.iloc[0, 0])
-                ing = resumen_raw.columns[1] + ": " + str(resumen_raw.iloc[0, 1])
-                aho = resumen_raw.columns[2] + ": " + str(resumen_raw.iloc[0, 2])
-                
-                col1.metric("Gastos Fijos", str(resumen_raw.iloc[0, 0]))
-                col2.metric("Ingresos", str(resumen_raw.iloc[0, 1]))
-                col3.metric("Ahorro", str(resumen_raw.iloc[0, 2]))
+                # Usamos indices posicionales para asegurar lectura
+                c1.metric(str(balance.columns[0]), str(balance.iloc[0, 0]))
+                c2.metric(str(balance.columns[1]), str(balance.iloc[0, 1]))
+                c3.metric(str(balance.columns[2]), str(balance.iloc[0, 2]))
             except:
-                st.warning("No se pudo leer el resumen correctamente.")
+                st.warning("Formato de balance no reconocido.")
         
         st.divider()
 
-        c1, c2 = st.columns(2)
-        with c1:
+        col1, col2 = st.columns(2)
+        
+        with col1:
             st.subheader("📉 Gastos")
-            st.dataframe(gastos_raw, hide_index=True, use_container_width=True)
-        with c2:
+            if not gastos.empty:
+                st.dataframe(gastos, hide_index=True, use_container_width=True)
+            else:
+                st.info("No hay gastos registrados.")
+
+        with col2:
             st.subheader("📈 Ingresos")
-            st.dataframe(ingresos_raw, hide_index=True, use_container_width=True)
+            if not ingresos.empty:
+                st.dataframe(ingresos, hide_index=True, use_container_width=True)
+            else:
+                st.info("No hay ingresos registrados.")
 
 except Exception as e:
-    st.error("⚠️ Ocurrió un error inesperado.")
-    st.code(f"Error: {e}")
+    st.error("⚠️ Algo salió mal al leer el Excel.")
+    st.code(str(e))
