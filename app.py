@@ -1,48 +1,37 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
+import plotly.express as px # Usaremos gráficos lindos
 
-# --- 1. CONFIGURACIÓN ---
+# --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Finanzas Familiares", layout="wide", page_icon="💰")
-st.title("💸 Tablero de Control Familiar")
 
-# --- 2. LISTAS ---
-MESES = [
-    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
+# --- LISTAS ---
+# Solo los meses que tienen datos reales o estructura válida
+MESES_ORDENADOS = [
     "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
 ]
-COLUMNAS_DINERO = [
-    "Monto", "Total", "Gastos", "Ingresos", "Ahorro", 
-    "Cotizacion", "Saldo", "Valor", "Pesos", "USD", "Ars"
-] + MESES
+# Si ya tenés datos de 2025 cargados, agregalos a esta lista:
+# "Enero", "Febrero", etc.
 
-# --- 3. FUNCIONES DE LIMPIEZA ---
-def formato_pesos(valor):
+COLUMNAS_DINERO = ["Monto", "Total", "Gastos", "Ingresos", "Ahorro", "Valor", "Pesos", "USD"]
+
+# --- FUNCIONES DE LIMPIEZA ---
+def limpiar_valor(val):
+    """Convierte $ 1.000,00 a numero float 1000.0"""
     try:
-        val_str = str(valor).strip()
-        if val_str in ["", "-", "nan", "None", "0", "0.0"]: return "-"
-        val_str = val_str.replace("$", "").replace("USD", "").replace("Ars", "").strip()
+        val_str = str(val).strip().replace("$", "").replace("USD", "").replace("Ars", "").strip()
         val_str = val_str.replace(".", "").replace(",", ".")
-        val_float = float(val_str)
-        return "$ " + "{:,.0f}".format(val_float).replace(",", ".")
+        return float(val_str)
     except:
-        return valor
+        return 0.0
 
-def limpiar_y_formatear(df):
-    if df.empty: return df
-    # Primero convertimos todo a string para evitar el error int64/JSON
-    df = df.astype(str).replace(["nan", "None", "<NA>"], "")
-    
-    for col in df.columns:
-        if any(k.lower() in col.lower() for k in COLUMNAS_DINERO):
-            if "descrip" not in col.lower() and "moneda" not in col.lower() and "fuente" not in col.lower():
-                df[col] = df[col].apply(formato_pesos)
-    return df
+def formato_visual(val):
+    """Para mostrar en pantalla: $ 1.000"""
+    return "$ {:,.0f}".format(val).replace(",", ".")
 
-# --- 4. MOTORES DE BÚSQUEDA Y CORTE (VERSIÓN CLÁSICA) ---
-
+# --- FUNCIONES DE EXTRACCIÓN (Las que ya funcionan) ---
 def encontrar_celda(df_raw, palabras_clave, min_col=0, min_row=0):
-    """Busca coordenadas de una palabra clave"""
     try:
         zona = df_raw.iloc[min_row:, min_col:]
         for r_idx, row in zona.iterrows():
@@ -52,161 +41,152 @@ def encontrar_celda(df_raw, palabras_clave, min_col=0, min_row=0):
                     if p.lower() in val_str:
                         return r_idx, (c_idx + min_col)
         return None, None
-    except:
-        return None, None
+    except: return None, None
 
-def cortar_bloque_fijo(df_raw, fila, col, num_cols, filas_aprox=30):
-    """
-    Corta un bloque de tamaño fijo y elimina filas vacías.
-    ESTA ES LA VERSIÓN QUE FUNCIONABA BIEN.
-    No intenta adivinar dónde termina la tabla fila por fila.
-    """
+def cortar_bloque(df_raw, fila, col, num_cols, filas_aprox=30):
     try:
-        # Headers
         headers = df_raw.iloc[fila, col : col + num_cols].astype(str).str.strip().tolist()
         headers = [f"C{i}" if h in ["nan", ""] else h for i,h in enumerate(headers)]
-        
-        start_row = fila + 1
-        
-        # Cortamos el bloque entero
-        df = df_raw.iloc[start_row : start_row + filas_aprox, col : col + num_cols].copy()
-        
-        # Eliminamos filas que estén totalmente vacías (o casi vacías)
-        # Filtramos si la columna 0 y la columna 1 están vacías a la vez
+        start = fila + 1
+        df = df_raw.iloc[start : start + filas_aprox, col : col + num_cols].copy()
+        # Filtro: Eliminar filas donde las primeras 2 columnas estén vacías
         df = df[~((df.iloc[:, 0].astype(str).isin(["nan", "", "None"])) & (df.iloc[:, 1].astype(str).isin(["nan", "", "None"])))]
-        
         df.columns = headers
         return df
-    except:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
-# --- 5. APP PRINCIPAL ---
+# --- MOTOR DE DATOS (EL CEREBRO NUEVO) ---
+@st.cache_data(ttl=60) # Guarda en memoria 60 segs para no recargar lento
+def cargar_todo_el_anio(conn):
+    datos_anuales = []
+    resumen_kpi = []
 
-lista_pestanas = ["Resumen Anual"] + MESES[6:] + MESES[:6]
-hoja_seleccionada = st.sidebar.selectbox("📅 Selecciona Período:", lista_pestanas)
+    # Barra de progreso porque leer muchas hojas tarda unos segundos
+    barra = st.progress(0, text="Analizando tu año financiero...")
+    
+    for i, mes in enumerate(MESES_ORDENADOS):
+        barra.progress((i + 1) / len(MESES_ORDENADOS), text=f"Leyendo {mes}...")
+        try:
+            df_raw = conn.read(worksheet=mes, header=None)
+            
+            # 1. Extraer KPI (Balance)
+            r_bal, c_bal = encontrar_celda(df_raw, ["Gastos fijos"], min_col=5)
+            if r_bal is not None:
+                bal = cortar_bloque(df_raw, r_bal, c_bal, 3, filas_aprox=1)
+                if not bal.empty:
+                    # Limpiamos y guardamos los totales
+                    gastos = limpiar_valor(bal.iloc[0, 0])
+                    ingresos = limpiar_valor(bal.iloc[0, 1])
+                    ahorro = limpiar_valor(bal.iloc[0, 2])
+                    
+                    resumen_kpi.append({
+                        "Mes": mes,
+                        "Gastos": gastos,
+                        "Ingresos": ingresos,
+                        "Ahorro": ahorro
+                    })
+
+            # 2. Extraer Detalle de Gastos (para análisis futuro por categoría)
+            # (Aquí podrías agregar lógica para guardar todos los gastos juntos)
+            
+        except Exception as e:
+            print(f"Error leyendo {mes}: {e}")
+            
+    barra.empty() # Borra la barra
+    return pd.DataFrame(resumen_kpi)
+
+# --- INTERFAZ PRINCIPAL ---
+
+st.sidebar.title("Navegación")
+opcion = st.sidebar.radio("Ir a:", ["📊 Dashboard General", "📅 Ver Mensual"])
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-try:
-    df_raw = conn.read(worksheet=hoja_seleccionada, header=None, ttl=5)
-except:
-    st.error("Error conectando con Google Sheets.")
-    st.stop()
-
 # ==========================================
-# RESUMEN ANUAL
+# PANTALLA 1: DASHBOARD INTELIGENTE
 # ==========================================
-if hoja_seleccionada == "Resumen Anual":
-    st.header("📊 Resumen Anual")
-
-    # 1. GASTOS
-    r, c = encontrar_celda(df_raw, ["Categoría", "Categoria"])
-    if r is not None:
-        st.subheader("📉 Evolución de Gastos")
-        df = cortar_bloque_fijo(df_raw, r, c, 14, filas_aprox=25)
-        st.dataframe(limpiar_y_formatear(df), hide_index=True)
-
-    st.divider()
-
-    # 2. SALDOS
-    r, c = encontrar_celda(df_raw, ["Saldos Mensuales"])
-    if r is not None:
-        st.subheader("💰 Saldos Mensuales")
-        # Solo 1 fila de datos
-        df = cortar_bloque_fijo(df_raw, r + 1, c, 14, filas_aprox=1)
-        st.dataframe(limpiar_y_formatear(df), hide_index=True)
-
-    st.divider()
-
-    c1, c2 = st.columns([1, 2])
-
-    # 3. AHORROS (Búsqueda por ANCLA: 'Paypal')
-    with c1:
-        st.subheader("🏦 Mis Ahorros")
-        r_dato, c_dato = encontrar_celda(df_raw, ["Paypal", "Eft. casa"])
-        if r_dato is not None:
-            # Header está 1 arriba
-            df = cortar_bloque_fijo(df_raw, r_dato - 1, c_dato, 5, filas_aprox=6)
-            st.dataframe(limpiar_y_formatear(df), hide_index=True)
-        else:
-            # Fallback
-            r, c = encontrar_celda(df_raw, ["Fuente"])
-            if r is not None:
-                df = cortar_bloque_fijo(df_raw, r, c, 5, filas_aprox=6)
-                st.dataframe(limpiar_y_formatear(df), hide_index=True)
-
-    # 4. CAMBIO (Búsqueda por ANCLA: 'Cotizacion')
-    with c2:
-        st.subheader("🔄 Cambio de Dólares")
-        r_dato, c_dato = encontrar_celda(df_raw, ["Cotizacion"]) 
-        if r_dato is not None:
-            # Header está 2 arriba (según tus tablas)
-            df = cortar_bloque_fijo(df_raw, r_dato - 2, 0, 14, filas_aprox=6)
-            st.dataframe(limpiar_y_formatear(df), hide_index=True)
-        else:
-            # Fallback
-            r, c = encontrar_celda(df_raw, ["Dolares"])
-            if r is not None:
-                 df = cortar_bloque_fijo(df_raw, r - 1, 0, 14, filas_aprox=6)
-                 st.dataframe(limpiar_y_formatear(df), hide_index=True)
-
-# ==========================================
-# MESES INDIVIDUALES (LÓGICA RESTAURADA)
-# ==========================================
-else:
-    st.write(f"📂 Viendo mes de: **{hoja_seleccionada}**")
-
-    # 1. BALANCE
-    # Buscamos en la zona derecha (col 5+)
-    r_bal, c_bal = encontrar_celda(df_raw, ["Gastos fijos"], min_col=5)
-    balance = pd.DataFrame()
-    if r_bal is not None:
-        balance = cortar_bloque_fijo(df_raw, r_bal, c_bal, 3, filas_aprox=1)
-
-    # 2. GASTOS
-    # Buscamos en la zona izquierda (col 0)
-    r_gastos, c_gastos = encontrar_celda(df_raw, ["Vencimiento", "Categoría"], min_col=0)
-    gastos = pd.DataFrame()
-    if r_gastos is not None:
-        # Recuperamos las 40 filas por seguridad
-        gastos = cortar_bloque_fijo(df_raw, r_gastos, c_gastos, 5, filas_aprox=40)
-
-    # 3. INGRESOS
-    # Buscamos "Fecha" OBLIGATORIAMENTE a la derecha (min_col=6) y abajo (min_row=3)
-    r_ing, c_ing = encontrar_celda(df_raw, ["Fecha", "Descripcion"], min_col=6, min_row=3)
-    ingresos = pd.DataFrame()
-    if r_ing is not None:
-        ingresos = cortar_bloque_fijo(df_raw, r_ing, c_ing, 6, filas_aprox=20)
+if opcion == "📊 Dashboard General":
+    st.title("💸 Tablero de Control Familiar")
+    st.markdown("### Panorama Anual (Generado Automáticamente)")
     
-    # VISUALIZACIÓN
-    st.markdown("### 💰 Balance del Mes")
-    if not balance.empty:
+    # Cargar datos
+    df_resumen = cargar_todo_el_anio(conn)
+    
+    if not df_resumen.empty:
+        # 1. TARJETAS DE TOTALES
+        total_ingresos = df_resumen["Ingresos"].sum()
+        total_gastos = df_resumen["Gastos"].sum()
+        total_ahorro = df_resumen["Ahorro"].sum()
+        
         c1, c2, c3 = st.columns(3)
-        try:
-            # Forzamos conversión a string de índices para evitar líos
-            v1 = formato_pesos(balance.iloc[0, 0])
-            v2 = formato_pesos(balance.iloc[0, 1])
-            v3 = formato_pesos(balance.iloc[0, 2])
-            c1.metric(balance.columns[0], v1)
-            c2.metric(balance.columns[1], v2)
-            c3.metric(balance.columns[2], v3)
-        except: 
-            st.warning("Error visualizando balance.")
-    else: 
-        st.warning("No se encontró tabla Balance.")
+        c1.metric("Total Ingresos Año", formato_visual(total_ingresos), border=True)
+        c2.metric("Total Gastos Año", formato_visual(total_gastos), delta_color="inverse", border=True)
+        c3.metric("Ahorro Neto Acumulado", formato_visual(total_ahorro), border=True)
+        
+        st.divider()
+        
+        # 2. GRÁFICOS
+        col_graf1, col_graf2 = st.columns(2)
+        
+        with col_graf1:
+            st.subheader("Evolución de Gastos vs Ingresos")
+            # Reestructurar datos para el gráfico
+            df_melted = df_resumen.melt(id_vars=["Mes"], value_vars=["Ingresos", "Gastos"], var_name="Tipo", value_name="Monto")
+            st.bar_chart(df_melted, x="Mes", y="Monto", color="Tipo", stack=False)
 
-    st.divider()
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("📉 Gastos")
-        if not gastos.empty: 
-            st.dataframe(limpiar_y_formatear(gastos), hide_index=True)
-        else: 
-            st.info("Sin gastos registrados.")
+        with col_graf2:
+            st.subheader("Curva de Ahorro")
+            st.line_chart(df_resumen, x="Mes", y="Ahorro")
             
-    with col2:
-        st.subheader("📈 Ingresos")
-        if not ingresos.empty: 
-            st.dataframe(limpiar_y_formatear(ingresos), hide_index=True)
-        else: 
-            st.info("Sin ingresos registrados.")
+        # 3. TABLA DE DATOS
+        with st.expander("Ver tabla de datos consolidada"):
+            # Formateamos para mostrar bonito
+            df_show = df_resumen.copy()
+            for col in ["Gastos", "Ingresos", "Ahorro"]:
+                df_show[col] = df_show[col].apply(formato_visual)
+            st.dataframe(df_show, use_container_width=True)
+            
+    else:
+        st.warning("No se pudieron cargar datos de los meses. Revisa la conexión.")
+
+
+# ==========================================
+# PANTALLA 2: DETALLE MENSUAL (Lo clásico)
+# ==========================================
+elif opcion == "📅 Ver Mensual":
+    mes_seleccionado = st.sidebar.selectbox("Selecciona Mes:", MESES_ORDENADOS)
+    st.title(f"Detalle de {mes_seleccionado}")
+    
+    try:
+        df_raw = conn.read(worksheet=mes_seleccionado, header=None)
+        
+        # --- Extracción (Mismo código que ya funciona) ---
+        r_bal, c_bal = encontrar_celda(df_raw, ["Gastos fijos"], min_col=5)
+        balance = cortar_bloque(df_raw, r_bal, c_bal, 3, 1) if r_bal is not None else pd.DataFrame()
+        
+        r_gas, c_gas = encontrar_celda(df_raw, ["Vencimiento", "Categoría"], min_col=0)
+        gastos = cortar_bloque(df_raw, r_gas, c_gas, 5, 40) if r_gas is not None else pd.DataFrame()
+        
+        r_ing, c_ing = encontrar_celda(df_raw, ["Fecha", "Descripcion"], min_col=6, min_row=3)
+        ingresos = cortar_bloque(df_raw, r_ing, c_ing, 6, 20) if r_ing is not None else pd.DataFrame()
+
+        # --- Visualización Mensual ---
+        if not balance.empty:
+            c1, c2, c3 = st.columns(3)
+            # Limpiamos y mostramos
+            try:
+                v1 = balance.iloc[0,0]; v2 = balance.iloc[0,1]; v3 = balance.iloc[0,2]
+                c1.metric("Gastos Fijos", str(v1)); c2.metric("Ingresos", str(v2)); c3.metric("Ahorro", str(v3))
+            except: pass
+            
+        st.divider()
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Gastos")
+            st.dataframe(gastos, hide_index=True)
+        with col2:
+            st.subheader("Ingresos")
+            st.dataframe(ingresos, hide_index=True)
+            
+    except Exception as e:
+        st.error(f"Error cargando el mes: {e}")
