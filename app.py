@@ -6,16 +6,54 @@ import google.generativeai as genai
 import json
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="Finanzas Familiares Pro", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Finanzas Familiares Pro", layout="wide", page_icon="🔐")
 
-# --- 2. GESTIÓN DE CLAVES ---
+# --- 2. SISTEMA DE LOGIN (NUEVO) ---
+def check_password():
+    """Retorna True si el usuario ya se logueó correctamente."""
+    # Si no existe la variable en memoria, la creamos falsa
+    if "password_correct" not in st.session_state:
+        st.session_state.password_correct = False
+
+    # Si ya está logueado, retornamos True directo
+    if st.session_state.password_correct:
+        return True
+
+    # Si no, mostramos la pantalla de login
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.write("") # Espacio
+        st.write("") 
+        # LOGO
+        st.image("https://i.pinimg.com/1200x/12/63/fd/1263fd45459a5b1315e68ec1e792dfbc.jpg", use_container_width=True)
+        
+        st.markdown("### 🔐 Acceso Restringido")
+        pwd = st.text_input("Ingresa la contraseña:", type="password")
+        
+        if st.button("Ingresar"):
+            if pwd == "Aitana2026":
+                st.session_state.password_correct = True
+                st.rerun() # Recargamos para mostrar la app
+            else:
+                st.error("Contraseña incorrecta.")
+    
+    return False
+
+# SI EL PASSWORD NO ES CORRECTO, DETENEMOS TODO AQUÍ
+if not check_password():
+    st.stop()
+
+# =========================================================
+# ⬇️ A PARTIR DE AQUÍ, TODO EL CÓDIGO DE LA APP (OCULTO) ⬇️
+# =========================================================
+
+# --- 3. GESTIÓN DE CLAVES (SECRETS) ---
 try:
     if "GOOGLE_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 except: pass
 
-# --- 3. LÓGICA DE AÑOS (¡NUEVO!) ---
-# Definimos qué pestañas corresponden a cada año
+# --- 4. LISTAS Y CONFIG ---
 PESTANAS_POR_ANIO = {
     "2025": [
         "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
@@ -26,10 +64,9 @@ PESTANAS_POR_ANIO = {
         "Julio 26", "Agosto 26", "Septiembre 26", "Octubre 26", "Noviembre 26", "Diciembre 26"
     ]
 }
-
 COLUMNAS_DINERO = ["Monto", "Total", "Gastos", "Ingresos", "Ahorro", "Valor", "Pesos", "USD"]
 
-# --- 4. FUNCIONES DE LIMPIEZA ---
+# --- 5. FUNCIONES DE LIMPIEZA ---
 def limpiar_valor(val):
     if isinstance(val, (int, float)): return float(val)
     try:
@@ -43,7 +80,7 @@ def limpiar_valor(val):
 def formato_visual(val):
     return "$ {:,.0f}".format(val).replace(",", ".")
 
-# --- 5. FUNCIONES DE LECTURA ---
+# --- 6. FUNCIONES DE LECTURA ---
 def encontrar_celda(df_raw, palabras_clave, min_col=0, min_row=0):
     try:
         zona = df_raw.iloc[min_row:, min_col:]
@@ -67,7 +104,7 @@ def cortar_bloque(df_raw, fila, col, num_cols, filas_aprox=30):
         return df
     except: return pd.DataFrame()
 
-# --- 6. CEREBRO DE DATOS (DINÁMICO POR AÑO) ---
+# --- 7. CEREBRO DE DATOS ---
 @st.cache_data(ttl=60)
 def cargar_todo_el_anio(lista_meses_a_cargar):
     conn = st.connection("gsheets", type=GSheetsConnection)
@@ -100,7 +137,6 @@ def cargar_todo_el_anio(lista_meses_a_cargar):
                 df_gastos_mes = cortar_bloque(df_raw, r_gas, c_gas, 5, 40)
                 if not df_gastos_mes.empty:
                     cols = df_gastos_mes.columns
-                    # Intentamos detectar columnas dinamicamente, sino usamos indices fijos
                     col_monto = next((c for c in cols if "monto" in c.lower()), cols[2] if len(cols)>2 else None)
                     col_cat = next((c for c in cols if "categ" in c.lower()), cols[1] if len(cols)>1 else None)
                     
@@ -108,7 +144,6 @@ def cargar_todo_el_anio(lista_meses_a_cargar):
                         df_gastos_mes["Monto_Clean"] = df_gastos_mes[col_monto].apply(limpiar_valor)
                         df_gastos_mes["Mes"] = mes
                         df_gastos_mes["Orden_Mes"] = i
-                        
                         df_mini = df_gastos_mes[["Mes", "Orden_Mes", col_cat, "Monto_Clean"]].copy()
                         df_mini.columns = ["Mes", "Orden_Mes", "Categoria", "Monto"]
                         todos_los_gastos.append(df_mini)
@@ -119,7 +154,7 @@ def cargar_todo_el_anio(lista_meses_a_cargar):
     df_detalles = pd.concat(todos_los_gastos) if todos_los_gastos else pd.DataFrame()
     return df_kpi, df_detalles
 
-# --- 7. IA ---
+# --- 8. IA ---
 def analizar_imagen_con_ia(imagen_bytes, mime_type):
     try:
         model = genai.GenerativeModel('gemini-1.5-pro')
@@ -129,16 +164,21 @@ def analizar_imagen_con_ia(imagen_bytes, mime_type):
         return response.text
     except Exception as e: return f"Error IA: {str(e)}"
 
-# --- 8. INTERFAZ PRINCIPAL ---
+# --- 9. INTERFAZ PRINCIPAL (BARRA LATERAL Y PÁGINAS) ---
 
 st.sidebar.title("Navegación")
 
-# --- SELECTOR DE AÑO (LA CLAVE DEL CAMBIO) ---
+# SELECTOR DE AÑO
 anio_seleccionado = st.sidebar.selectbox("📅 Año Fiscal", ["2025", "2026"])
 MESES_ACTUALES = PESTANAS_POR_ANIO[anio_seleccionado]
 
 if st.sidebar.button("🔄 Refrescar Datos"):
     st.cache_data.clear(); st.rerun()
+
+# BOTÓN DE CERRAR SESIÓN
+if st.sidebar.button("🔒 Cerrar Sesión"):
+    st.session_state.password_correct = False
+    st.rerun()
 
 opcion = st.sidebar.radio("Ir a:", ["📊 Dashboard Inteligente", "📅 Ver Mensual", "📤 Cargar Comprobante"])
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -149,7 +189,6 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 if opcion == "📊 Dashboard Inteligente":
     st.title(f"📈 Análisis Financiero {anio_seleccionado}")
     
-    # Cargamos solo los meses del año elegido
     df_resumen, df_detalles = cargar_todo_el_anio(MESES_ACTUALES)
     
     if not df_resumen.empty:
@@ -193,7 +232,6 @@ if opcion == "📊 Dashboard Inteligente":
 # 2. VER MENSUAL
 # ==========================================
 elif opcion == "📅 Ver Mensual":
-    # El dropdown ahora solo muestra los meses del año seleccionado
     mes_seleccionado = st.sidebar.selectbox("Selecciona Mes:", MESES_ACTUALES)
     st.title(f"Detalle de {mes_seleccionado}")
     try:
@@ -227,7 +265,6 @@ elif opcion == "📤 Cargar Comprobante":
     st.title(f"📸 Carga para {anio_seleccionado}")
     col_izq, col_der = st.columns([1, 1.5])
     with col_izq:
-        # Solo permite elegir meses del año activo
         mes_destino = st.selectbox("Mes:", MESES_ACTUALES)
         
         cats_existentes = []
